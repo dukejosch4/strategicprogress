@@ -54,7 +54,8 @@ exports.whoopAuth = functions.https.onRequest((req, res) => {
     // Generate a random state string > 8 chars (Whoop requirement)
     const state = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
     // ADDED 'offline' scope to ensure we get a refresh_token
-    const scope = "read:recovery read:cycles read:sleep read:workout offline";
+    // Request every scope needed for the dashboard (recovery, workouts/strain, sleep, body metrics) plus offline for refresh.
+    const scope = "read:recovery read:cycles read:sleep read:workout read:body_measurement offline";
     // Explicitly encode the Redirect URI to handle special characters correctly
     const authUrl = `https://api.prod.whoop.com/oauth/oauth2/auth?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(CALLBACK_FUNCTION_URL)}&scope=${scope}&state=${state}`;
     console.log("Starting Auth Flow, redirecting to:", authUrl);
@@ -108,6 +109,10 @@ exports.whoopCallback = functions.https.onRequest(async (req, res) => {
             client_secret: CLIENT_SECRET,
             redirect_uri: CALLBACK_FUNCTION_URL,
         }), { headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+        console.log("Token exchange response", {
+            status: tokenResponse.status,
+            data: tokenResponse.data,
+        });
         const { access_token, refresh_token, expires_in } = tokenResponse.data;
         if (!refresh_token) {
             console.warn("WARNING: No refresh_token received from Whoop. Auto-sync will fail after 1 hour. Ensure 'offline' scope is requested.");
@@ -174,6 +179,10 @@ async function getAccessToken() {
                 client_id: CLIENT_ID,
                 client_secret: CLIENT_SECRET,
             }), { headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+            console.log("Refresh token response", {
+                status: response.status,
+                data: response.data,
+            });
             const { access_token, refresh_token, expires_in } = response.data;
             // Update DB with new tokens
             await db.collection("config").doc("whoop_tokens").set({
@@ -230,11 +239,17 @@ async function syncWhoopData() {
         const headers = { Authorization: `Bearer ${token}` };
         console.log("Fetching Whoop data...");
         // Using Promise.all to fetch distinct resources in parallel
+        // v1 endpoints no longer return data; switch to the documented v2 developer API.
         const [recoveryRes, cycleRes, sleepRes] = await Promise.all([
-            axios_1.default.get("https://api.prod.whoop.com/developer/v1/recovery?limit=25", { headers }),
-            axios_1.default.get("https://api.prod.whoop.com/developer/v1/cycle?limit=25", { headers }),
-            axios_1.default.get("https://api.prod.whoop.com/developer/v1/sleep?limit=25", { headers })
+            axios_1.default.get("https://api.prod.whoop.com/developer/v2/recovery?limit=25", { headers }),
+            axios_1.default.get("https://api.prod.whoop.com/developer/v2/cycle?limit=25", { headers }),
+            axios_1.default.get("https://api.prod.whoop.com/developer/v2/sleep?limit=25", { headers })
         ]);
+        console.log("Whoop fetch responses", {
+            recovery: { status: recoveryRes.status, data: recoveryRes.data },
+            cycle: { status: cycleRes.status, data: cycleRes.data },
+            sleep: { status: sleepRes.status, data: sleepRes.data },
+        });
         const recoveries = recoveryRes.data.records || [];
         const cycles = cycleRes.data.records || [];
         const sleeps = sleepRes.data.records || [];
